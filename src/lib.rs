@@ -4,4 +4,5 @@
 
 #![feature(portable_simd)]
 
-pub mod bitboard;
+pub mod game;
+pub mod search;

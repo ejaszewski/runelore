@@ -6,23 +6,16 @@ use std::fmt;
 use std::ops;
 use std::simd::{cmp::SimdPartialEq, num::SimdUint, u64x4};
 
+/// Mask representing all squares that are not on the A file.
 const NOT_A_FILE: u64 = 0xfefefefefefefefe;
+
+/// Mask representing all squares that are not on the H file.
 const NOT_H_FILE: u64 = 0x7f7f7f7f7f7f7f7f;
-const BOARD_FULL: u64 = u64::MAX;
 
-/// A low-level bitboard implemenation for Othello.
-///
-/// Implements move generation and move making for an Othello board relative to
-/// the side to move. The bitboard operations are implemented using u64 bit
-/// manipulations and use explicit vectorization using `portable_simd` where
-/// possible.
-#[derive(Clone, Copy)]
-pub struct Bitboard {
-    pub me: u64,
-    pub op: u64,
-}
+/// Mask representing a filled board.
+const FILLED: u64 = u64::MAX;
 
-/// A vectorized Kogge-Stone flood fill.
+/// A vectorized Kogge-Stone flood fill
 ///
 /// A standard [Kogge-Stone fill] that computes the fill in 4 directions in the
 /// lanes of a 4-wide u64 SIMD vector. This same approach is used in the [Coin]
@@ -39,8 +32,8 @@ fn vectorized_fill<const SHR: bool>(generator: u64x4, propagator: u64x4) -> u64x
         false => <u64x4 as ops::Shl>::shl,
     };
     let masks = match SHR {
-        true => u64x4::from_array([NOT_H_FILE, NOT_A_FILE, BOARD_FULL, NOT_H_FILE]),
-        false => u64x4::from_array([NOT_A_FILE, NOT_H_FILE, BOARD_FULL, NOT_A_FILE]),
+        true => u64x4::from_array([NOT_H_FILE, NOT_A_FILE, FILLED, NOT_H_FILE]),
+        false => u64x4::from_array([NOT_A_FILE, NOT_H_FILE, FILLED, NOT_A_FILE]),
     };
 
     let mut gen = generator;
@@ -54,7 +47,7 @@ fn vectorized_fill<const SHR: bool>(generator: u64x4, propagator: u64x4) -> u64x
     gen | (pro & shift(gen, SHIFTS << 2))
 }
 
-/// A vectorized directional shift.
+/// A vectorized directional shift
 ///
 /// A standard [single shift] that computes the shift in 4 directions in the
 /// lanes of a 4-wide u64 SIMD vector.
@@ -69,25 +62,32 @@ fn vectorized_shift<const SHR: bool>(gen: u64x4) -> u64x4 {
         false => <u64x4 as ops::Shl>::shl,
     };
     let masks = match SHR {
-        true => u64x4::from_array([NOT_H_FILE, NOT_A_FILE, BOARD_FULL, NOT_H_FILE]),
-        false => u64x4::from_array([NOT_A_FILE, NOT_H_FILE, BOARD_FULL, NOT_A_FILE]),
+        true => u64x4::from_array([NOT_H_FILE, NOT_A_FILE, FILLED, NOT_H_FILE]),
+        false => u64x4::from_array([NOT_A_FILE, NOT_H_FILE, FILLED, NOT_A_FILE]),
     };
 
     shift(gen, SHIFTS) & masks
 }
 
+/// A low-level bitboard implemenation for Othello
+///
+/// Implements move generation and move making for an Othello board relative to
+/// the side to move. The bitboard operations are implemented using u64 bit
+/// manipulations and use explicit vectorization using `portable_simd` where
+/// possible.
+#[derive(Clone, Copy)]
+pub struct Bitboard {
+    me: u64,
+    op: u64,
+}
+
 impl Bitboard {
-    pub fn init() -> Self {
-        Self {
-            me: 0x0000000810000000,
-            op: 0x0000001008000000,
-        }
-    }
-    
+    /// Returns a mask of empty disks
     pub fn empties(self) -> u64 {
         !(self.me | self.op)
     }
 
+    /// Returns a mask containing all valid moves
     pub fn get_moves(self) -> u64 {
         // Copy the board data into vectors
         let me_vec = u64x4::splat(self.me);
@@ -107,6 +107,9 @@ impl Bitboard {
         (shift_shr | shift_shl) & self.empties()
     }
 
+    /// Returns a bitboard for the position after a pass is played
+    /// 
+    /// *This function does not verify that a pass is a valid move.*
     pub fn pass(self) -> Self {
         Self {
             me: self.op,
@@ -114,6 +117,9 @@ impl Bitboard {
         }
     }
 
+    /// Returns a bitboard for the position after the provided move is played
+    /// 
+    /// *This function does not verify that the provided move is valid.*
     pub fn make_move(self, move_mask: u64) -> Self {
         const ZERO: u64x4 = u64x4::from_array([0; 4]);
 
@@ -145,9 +151,31 @@ impl Bitboard {
             op: self.me | swaps,
         }
     }
+
+    pub fn score(self) -> i32 {
+        self.me.count_ones().try_into().unwrap_or(0) - self.op.count_ones().try_into().unwrap_or(0)
+    }
+
+    pub fn get_me(self) -> u64 {
+        self.me
+    }
+
+    pub fn get_op(self) -> u64 {
+        self.op
+    }
 }
 
-impl fmt::Display for Bitboard {
+impl Default for Bitboard {
+    /// Initializes the bitboard to the Othello starting position.
+    fn default() -> Self {
+        Self {
+            me: 0x0000000810000000,
+            op: 0x0000001008000000,
+        }
+    }
+}
+
+impl fmt::Debug for Bitboard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut me = self.me;
         let mut op = self.op;
@@ -156,8 +184,8 @@ impl fmt::Display for Bitboard {
                 write!(f, "{}", (idx / 8) + 1)?
             }
             match (me & 1, op & 1) {
-                (1, 1) => write!(f, "X")?,
-                (1, 0) => write!(f, "#")?,
+                (1, 1) => write!(f, "#")?,
+                (1, 0) => write!(f, "X")?,
                 (0, 1) => write!(f, "O")?,
                 _ => write!(f, ".")?,
             }
